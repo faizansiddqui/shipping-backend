@@ -437,37 +437,39 @@ router.patch('/orders/:orderId/update-status', authMiddleware, async (req, res) 
     }
 
     // ✅ Wallet spend logic
-    let spendAmount = 0;
-    if (status === 'ACCEPTED') {
-      spendAmount = Number(amount);
-    } else if (status === 'RTO') {
-      spendAmount = Number(amount) / 2;
-    }
+    // let spendAmount = 0;
+    // if (status === 'ACCEPTED') {
+    //   spendAmount = Number(amount);
+    // } else if (status === 'RTO') {
+    //   spendAmount = Number(amount) / 2;
+    // }
 
-    if (spendAmount > 0) {
-      console.log(`💰 Wallet spend attempt: ₹${spendAmount}`);
+    // if (spendAmount > 0) {
+    //   console.log(`💰 Wallet spend attempt: ₹${spendAmount}`);
 
-      const response = await fetch("http://localhost:5000/wallet/spend", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          amount: spendAmount,
-          description: `Order ${status === 'RTO' ? 'Return' : 'Acceptance'} for orderId ${orderId}`,
-        }),
-      });
+    //   const response = await fetch(`${process.env.APP_BASE_URL}/wallet/spend`, {
+    //     method: "POST",
+    //     headers: {
+    //       "Content-Type": "application/json",
+    //       "Authorization": `Bearer ${token}`,
+    //     },
+    //     body: JSON.stringify({
+    //       amount: spendAmount,
+    //       description: `Order ${status === 'RTO' ? 'Return' : 'Acceptance'} for orderId ${orderId}`,
+    //     }),
+    //   });
 
-      const walletData = await response.json();
+    //   const walletData = await response.json();
 
-      if (!response.ok) {
-        console.error("❌ wallet/spend failed:", walletData);
-        throw walletData
-      }
+  //     if (!response.ok) {
+  //       console.error("❌ wallet/spend failed:", walletData);
+  //       throw walletData
+  //     }
 
-      // console.log("✅ Wallet spend success:", walletData);
-    }
+  //     console.log("✅ Wallet spend success:", walletData);
+  //  }
+
+
 
     //  Commit transaction if all good
     await t.commit();
@@ -580,6 +582,79 @@ router.get('/fetchAllPickupAddress', authMiddleware, async (req, res) => {
 router.get('/count-order', async (req, res) => {
   const count = await order_table.count();
   res.json({ status: true, data: count })
+})
+
+
+ 
+router.post('/schedule-order',authMiddleware,async(req,res)=>{
+   const {shipment_id,awb} = req.body;
+   if(!shipment_id){
+    return res.status(400).json({Status:false,Message:"Shipment_id/Orderid must be provided"});
+   }
+
+   try {
+
+       const rapidResponse = await fetch('https://api.rapidshyp.com/rapidshyp/apis/v1/schedule_pickup',{
+    method:"POST",
+    headers:{
+      "rapidshyp-token":process.env.RAPIDSHYP_TOKEN,
+      "Content-Type":"application/json"
+    },
+    body:JSON.stringify({
+      shipment_id:shipment_id,
+      awb:awb || ""
+    })
+   });
+
+   const result = await rapidResponse.text();
+
+   if(!rapidResponse.ok){
+    return res.status(400).json({Message:result})
+   }
+
+   return res.status(200).json({status:"Success",Message:result})
+    
+   } catch (error) {
+     
+    console.error(error);
+    res.status(500).json({Message:"something went wrong"});
+    
+    
+   }
+
+
+})
+
+//APPROVE ORDER HIT AFTER CREATE ORDER
+router.post('/approve-orders',async(req,res)=>{
+   const {shipment_id}  = req.body;
+   if(shipment_id.length == 0) return res.status(400).json({Message:'shipment_id/order id must be provided'});
+
+   try {
+
+    const rapid_response = await fetch('https://api.rapidshyp.com/rapidshyp/apis/v1/approve_orders',{
+      method:'POST',
+      headers:{
+        'rapidshyp-token':process.env.RAPIDSHYP_TOKEN,
+         "Content-Type":"application/json"
+      },
+      body:JSON.stringify({
+        order_id:shipment_id, //array of order id
+        store_name:'DEFAULT'
+      })
+    });
+    const result = await rapid_response.text();
+    if(!rapid_response.ok){
+      return res.status(400).json({Message:"Cant't Approve Orders",err:result});
+    }
+
+    return res.status(200).json({Status:"Success",Meassage:result})
+    
+   } catch (error) {
+    console.error(error);
+    res.status(500).json({Message:"something went wrong",error:error})  
+    
+   }
 })
 
 

@@ -4,9 +4,12 @@ const { Sequelize, DataTypes, Op } = require('sequelize');
 const db = new Sequelize(process.env.DATABASE_URL, {
   dialect: 'postgres',
   dialectOptions: {
-    ssl: { require: true, rejectUnauthorized: false } // ✅ required for Render / Supabase
+    ssl: {
+      require: true,
+      rejectUnauthorized: false,
+    },
   },
-  logging: false, // optional: makes Render logs cleaner
+  logging: false,
 });
 
 (async () => {

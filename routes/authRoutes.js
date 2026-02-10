@@ -80,6 +80,8 @@ router.post("/login", async (req, res) => {
 
   res.cookie("sb_access_token", accessToken, { ...cookieOption, maxAge: expiresIn * 1000 });
   res.cookie("sb_refresh_token", refreshToken, { ...cookieOption, maxAge: 15 * 24 * 60 * 60 * 1000 });
+  console.log('login sucessful');
+  
   res.json({ message: "Login successful", user: data.user });
 });
 
