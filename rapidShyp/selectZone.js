@@ -52,6 +52,9 @@ const metro_cities = [
   "110062",
 ];
 
+console.log(getZone("209602","110002"));
+
+
  function getZone(pickup, destination) {
   if (pickup.length !== 6 || destination.length !== 6) {
     return console.log("invalid pincode");
