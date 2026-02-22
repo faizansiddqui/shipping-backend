@@ -91,6 +91,24 @@ const OrderTable = db.define('OrderTable', {
         field: 'user_id'
     },
 
+    awb_number: {
+        type: DataTypes.STRING,
+        allowNull: true,
+    },
+    label_url: {
+        type: DataTypes.STRING(2048),
+        allowNull: true,
+    },
+    label_pending: {
+        type: DataTypes.BOOLEAN,
+        allowNull: true,
+        defaultValue: false,
+    },
+    rapid_shipment_id: {
+        type: DataTypes.STRING,
+        allowNull: true,
+    },
+
 }, {
     timestamps: true, // adds createdAt, updatedAt
     freezeTableName: true // prevents plural names like "OrderTables"

@@ -7,6 +7,161 @@ const authMiddleware = require("../middleware/auth");
 const supabase = require("../config/supabase");
 // const axios = require("axios");
 
+const extractAwbNumber = (data) =>
+  data?.awb ||
+  data?.awb_number ||
+  data?.AWB ||
+  data?.data?.awb ||
+  data?.data?.awb_number ||
+  data?.data?.AWB ||
+  "";
+
+const extractLabelUrl = (data) =>
+  data?.label_url ||
+  data?.labelUrl ||
+  data?.label_link ||
+  data?.labelLink ||
+  data?.label ||
+  data?.pdf_label ||
+  data?.pdfLabel ||
+  data?.labelURL ||
+  data?.file_name ||
+  data?.fileName ||
+  data?.labelRemarks ||
+  data?.data?.label_url ||
+  data?.data?.label ||
+  data?.data?.label_link ||
+  data?.data?.file_name ||
+  data?.data?.fileName ||
+  data?.labelUrlWithPrefix ||
+  data?.data?.labelUrlWithPrefix ||
+  "";
+
+const generateLabel = async (shipmentId, awb = "") => {
+  const resp = await fetch(
+    "https://api.rapidshyp.com/rapidshyp/apis/v1/generate_label",
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "rapidshyp-token": process.env.RAPIDSHYP_TOKEN,
+      },
+      // send both possible keys to satisfy API variants
+      body: JSON.stringify({
+        shipmentId: [shipmentId],
+        shipment_id: [shipmentId],
+        order_id: [shipmentId], // RapidShyp often uses order_id == shipment id
+        awb_number: awb || undefined,
+        awb: awb || undefined,
+      }),
+    },
+  );
+
+  const raw = await resp.text();
+  let data = null;
+  try {
+    data = raw ? JSON.parse(raw) : null;
+  } catch (err) {
+    data = null;
+  }
+
+  if (!resp.ok || data?.status === false) {
+    const msg =
+      data?.remarks ||
+      data?.message ||
+      raw ||
+      "Failed to generate label from RapidShyp";
+    const err = new Error(msg);
+    err.data = data;
+    err.httpStatus = resp.status;
+    throw err;
+  }
+
+  const labelUrl =
+    data?.file_name ||
+    data?.fileName ||
+    data?.labelURL ||
+    data?.labelUrl ||
+    data?.label_url ||
+    data?.labelData?.[0]?.labelURL ||
+    data?.labelData?.[0]?.labelUrl ||
+    data?.labelData?.[0]?.label_url ||
+    data?.labelData?.[0]?.file_name ||
+    data?.labelData?.[0]?.fileName ||
+    "";
+  const awbFromLabel =
+    data?.awb ||
+    data?.awb_number ||
+    data?.AWB ||
+    data?.data?.awb ||
+    data?.data?.awb_number ||
+    null;
+  return { labelUrl, awb: awbFromLabel, raw: data };
+};
+
+let orderColumnsEnsured = false;
+const ensureOrderTableColumns = async () => {
+  if (orderColumnsEnsured) return;
+  try {
+    await db.query(
+      'ALTER TABLE "OrderTable" ADD COLUMN IF NOT EXISTS awb_number VARCHAR;'
+    );
+    await db.query(
+      'ALTER TABLE "OrderTable" ADD COLUMN IF NOT EXISTS label_url VARCHAR(2048);'
+    );
+    await db.query(
+      'ALTER TABLE "OrderTable" ADD COLUMN IF NOT EXISTS label_pending BOOLEAN DEFAULT false;'
+    );
+    await db.query(
+      'ALTER TABLE "OrderTable" ADD COLUMN IF NOT EXISTS rapid_shipment_id VARCHAR;'
+    );
+    orderColumnsEnsured = true;
+  } catch (err) {
+    console.error("Failed to ensure OrderTable columns:", err.message);
+  }
+};
+
+const fetchOrderInfo = async (orderId, channelOrderId) => {
+  const url = `https://api.rapidshyp.com/rapidshyp/apis/v1/get_orders_info?order_id=${encodeURIComponent(
+    orderId,
+  )}&channel_order_id=${encodeURIComponent(channelOrderId)}`;
+
+  const headers = {
+    "content-type": "application/json",
+    "rapidshyp-token": process.env.RAPIDSHYP_TOKEN,
+  };
+
+  const parse = async (res) => {
+    const raw = await res.text();
+    let data = null;
+    try {
+      data = raw ? JSON.parse(raw) : null;
+    } catch (err) {
+      data = null;
+    }
+    return { res, raw, data };
+  };
+
+  // Some Rapidshyp endpoints expect GET (405 for POST)
+  let result = await parse(
+    await fetch(url, {
+      method: "GET",
+      headers,
+    }),
+  );
+
+  if (result.res.status === 405) {
+    result = await parse(
+      await fetch(url, {
+        method: "POST",
+        headers,
+      }),
+    );
+  }
+
+  return { infoResponse: result.res, infoRaw: result.raw, infoData: result.data };
+};
+
 router.post("/create/pickup_location", async (req, res) => {
   try {
     const {
@@ -340,6 +495,20 @@ router.post("/create-order", async (req, res) => {
       },
     };
 
+    // Derive COD flags/amounts for RapidShyp
+    const isCod = String(paymentMethod || "").toUpperCase() === "COD";
+    const collectableAmount =
+      isCod
+        ? Number(resultPayload.totalOrderValue || 0) +
+          Number(resultPayload.shippingCharges || 0) +
+          Number(resultPayload.codCharges || 0)
+        : 0;
+
+    resultPayload.cod = isCod;
+    resultPayload.codAmount = collectableAmount;
+    resultPayload.collectable_amount = collectableAmount;
+    resultPayload.collectableValue = collectableAmount;
+
     // Check if orderId already exists before attempting insert
     const existingOrder = await order_table.findOne({
       where: { orderId: resultPayload.orderId },
@@ -497,6 +666,7 @@ router.patch(
   "/orders/:orderId/update-status",
   authMiddleware,
   async (req, res) => {
+    await ensureOrderTableColumns();
     const t = await db.transaction(); // start transaction
 
     try {
@@ -539,6 +709,32 @@ router.patch(
         });
       }
 
+      // If approving, first approve in Rapidshyp
+      if (status === "ACCEPTED") {
+        const approveResponse = await fetch(
+          "https://api.rapidshyp.com/rapidshyp/apis/v1/approve_orders",
+          {
+            method: "POST",
+            headers: {
+              "rapidshyp-token": process.env.RAPIDSHYP_TOKEN,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              order_id: [orderId],
+              store_name: order.storeName || "DEFAULT",
+            }),
+          },
+        );
+        const approveText = await approveResponse.text();
+        if (!approveResponse.ok) {
+          await t.rollback();
+          return res.status(400).json({
+            status: false,
+            message: approveText || "Rapidshyp approve failed",
+          });
+        }
+      }
+
       //  Update order status inside transaction
       await order.update({ status }, { transaction: t });
 
@@ -552,38 +748,7 @@ router.patch(
         return res.status(401).json({ error: "No auth token" });
       }
 
-      // ✅ Wallet spend logic
-      // let spendAmount = 0;
-      // if (status === 'ACCEPTED') {
-      //   spendAmount = Number(amount);
-      // } else if (status === 'RTO') {
-      //   spendAmount = Number(amount) / 2;
-      // }
-
-      // if (spendAmount > 0) {
-      //   console.log(`💰 Wallet spend attempt: ₹${spendAmount}`);
-
-      //   const response = await fetch(`${process.env.APP_BASE_URL}/wallet/spend`, {
-      //     method: "POST",
-      //     headers: {
-      //       "Content-Type": "application/json",
-      //       "Authorization": `Bearer ${token}`,
-      //     },
-      //     body: JSON.stringify({
-      //       amount: spendAmount,
-      //       description: `Order ${status === 'RTO' ? 'Return' : 'Acceptance'} for orderId ${orderId}`,
-      //     }),
-      //   });
-
-      //   const walletData = await response.json();
-
-      //     if (!response.ok) {
-      //       console.error("❌ wallet/spend failed:", walletData);
-      //       throw walletData
-      //     }
-
-      //     console.log("✅ Wallet spend success:", walletData);
-      //  }
+      // Wallet spend is now handled only after successful scheduling (AWB + label) to avoid premature deductions.
 
       //  Commit transaction if all good
       await t.commit();
@@ -603,6 +768,409 @@ router.patch(
         status: false,
         message: error.message,
         data: "Transaction failed — rolled back",
+      });
+    }
+  },
+);
+
+router.patch(
+  "/orders/:orderId/update-shipping",
+  authMiddleware,
+  async (req, res) => {
+    await ensureOrderTableColumns();
+    try {
+      const rawOrderId = req.params.orderId;
+      if (!rawOrderId) {
+        return res
+          .status(400)
+          .json({ status: false, message: "Order ID is required" });
+      }
+
+      const {
+        selectShippingCharges,
+        selectedCourierName,
+        selectedFreightMode,
+        paymentMethod,
+      } = req.body || {};
+
+      if (!selectedCourierName || !selectedFreightMode) {
+        return res.status(400).json({
+          status: false,
+          message: "Courier name and freight mode are required",
+        });
+      }
+
+      const normalizedId = String(rawOrderId).trim();
+      const fallbackId =
+        normalizedId.startsWith("#") ? normalizedId.slice(1) : normalizedId;
+
+      let order = await order_table.findOne({ where: { orderId: normalizedId } });
+      if (!order && fallbackId !== normalizedId) {
+        order = await order_table.findOne({ where: { orderId: fallbackId } });
+      }
+
+      if (!order) {
+        return res.status(404).json({
+          status: false,
+          message: `Order with ID '${normalizedId}' not found`,
+        });
+      }
+
+      await order.update({
+        selectShippingCharges: Number(selectShippingCharges || 0),
+        selectedCourierName,
+        selectedFreightMode,
+        paymentMethod: paymentMethod || order.paymentMethod,
+      });
+
+      return res.status(200).json({
+        status: true,
+        message: "Shipping details updated",
+        data: order.toJSON(),
+      });
+    } catch (error) {
+      console.error("Error updating shipping details:", error);
+      return res.status(500).json({
+        status: false,
+        message: "Failed to update shipping details",
+        error: error.message,
+      });
+    }
+  },
+);
+
+router.post(
+  "/orders/:orderId/schedule",
+  authMiddleware,
+  async (req, res) => {
+    await ensureOrderTableColumns();
+    try {
+      const rawOrderId = req.params.orderId;
+      if (!rawOrderId) {
+        return res
+          .status(400)
+          .json({ status: false, message: "Order ID is required" });
+      }
+
+      const {
+        selectShippingCharges,
+        selectedCourierName,
+        selectedFreightMode,
+        paymentMethod,
+        courier_code,
+      } = req.body || {};
+
+      if (!selectedCourierName || !selectedFreightMode) {
+        return res.status(400).json({
+          status: false,
+          message: "Courier name and freight mode are required",
+        });
+      }
+      if (!courier_code) {
+        return res.status(400).json({
+          status: false,
+          message: "courier_code is required",
+        });
+      }
+
+      const normalizedId = String(rawOrderId).trim();
+      const fallbackId =
+        normalizedId.startsWith("#") ? normalizedId.slice(1) : normalizedId;
+
+      let order = await order_table.findOne({ where: { orderId: normalizedId } });
+      if (!order && fallbackId !== normalizedId) {
+        order = await order_table.findOne({ where: { orderId: fallbackId } });
+      }
+
+      if (!order) {
+        return res.status(404).json({
+          status: false,
+          message: `Order with ID '${normalizedId}' not found`,
+        });
+      }
+
+      if (order.status !== "ACCEPTED") {
+        return res.status(400).json({
+          status: false,
+          message: "Only ACCEPTED orders can be scheduled",
+        });
+      }
+
+      const shipmentId = fallbackId;
+      let { infoResponse, infoRaw, infoData } = await fetchOrderInfo(
+        shipmentId,
+        shipmentId,
+      );
+      const normalizedShipmentId = shipmentId.startsWith("#")
+        ? shipmentId.slice(1)
+        : shipmentId;
+
+      const infoStatus =
+        typeof infoData?.status === "string"
+          ? infoData.status.toUpperCase()
+          : infoData?.status;
+      let infoOk =
+        infoResponse.ok &&
+        (infoStatus === "SUCCESS" ||
+          infoStatus === true ||
+          infoData?.remark === "SUCCESS");
+
+      if (!infoOk && normalizedShipmentId !== shipmentId) {
+        ({ infoResponse, infoRaw, infoData } = await fetchOrderInfo(
+          normalizedShipmentId,
+          normalizedShipmentId,
+        ));
+        const retryStatus =
+          typeof infoData?.status === "string"
+            ? infoData.status.toUpperCase()
+            : infoData?.status;
+        infoOk =
+          infoResponse.ok &&
+          (retryStatus === "SUCCESS" ||
+            retryStatus === true ||
+            infoData?.remark === "SUCCESS");
+      }
+
+      if (!infoOk) {
+        return res.status(400).json({
+          status: false,
+          message:
+            infoData?.remarks ||
+            infoData?.remark ||
+            infoData?.message ||
+            infoRaw ||
+            "Failed to fetch order info",
+          data: infoData || null,
+          details: infoData ? null : infoRaw,
+          httpStatus: infoResponse.status,
+        });
+      }
+      const shipmentLines = Array.isArray(infoData?.shipment_lines)
+        ? infoData.shipment_lines
+        : [];
+      if (shipmentLines.length === 0) {
+        return res.status(400).json({
+          status: false,
+          message: "No shipment lines found for this order.",
+          data: infoData,
+        });
+      }
+      const primaryShipment = shipmentLines[0];
+      const shipmentIdForAwb =
+        primaryShipment?.shipment_id ||
+        primaryShipment?.Shipment_id ||
+        primaryShipment?.order_id ||
+        shipmentId;
+      const existingAwb = extractAwbNumber(primaryShipment) || "";
+      const rapidShipmentId =
+        primaryShipment?.shipment_id ||
+        primaryShipment?.Shipment_id ||
+        primaryShipment?.order_id ||
+        infoData?.order_id ||
+        shipmentIdForAwb;
+
+      const approveResponse = await fetch(
+        "https://api.rapidshyp.com/rapidshyp/apis/v1/approve_orders",
+        {
+          method: "POST",
+          headers: {
+            "rapidshyp-token": process.env.RAPIDSHYP_TOKEN,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            order_id: [shipmentId],
+            store_name: "DEFAULT",
+          }),
+        },
+      );
+      const approveText = await approveResponse.text();
+      if (!approveResponse.ok) {
+        return res.status(400).json({
+          status: false,
+          message: approveText || "Failed to approve order",
+        });
+      }
+
+      let awb = existingAwb;
+      if (!awb) {
+        const assignResponse = await fetch(
+          "https://api.rapidshyp.com/rapidshyp/apis/v1/assign_awb",
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "rapidshyp-token": process.env.RAPIDSHYP_TOKEN,
+            },
+            body: JSON.stringify({
+              shipment_id: shipmentIdForAwb,
+              courier_code,
+            }),
+          },
+        );
+        const assignRaw = await assignResponse.text();
+        let assignResult = null;
+        try {
+          assignResult = assignRaw ? JSON.parse(assignRaw) : null;
+        } catch (err) {
+          assignResult = null;
+        }
+        if (!assignResponse.ok) {
+          const msg =
+            assignResult?.Message ||
+            assignResult?.message ||
+            assignResult?.error ||
+            assignRaw ||
+            "Failed to assign AWB number";
+          return res.status(400).json({
+            status: false,
+            message: msg,
+            data: assignResult || assignRaw,
+          });
+        }
+
+        awb = extractAwbNumber(assignResult);
+        if (!awb) {
+          return res.status(502).json({
+            status: false,
+            message: "AWB number missing from assign_awb response",
+            data: assignResult,
+          });
+        }
+      }
+
+      const scheduleResponse = await fetch(
+        "https://api.rapidshyp.com/rapidshyp/apis/v1/schedule_pickup",
+        {
+          method: "POST",
+          headers: {
+            "rapidshyp-token": process.env.RAPIDSHYP_TOKEN,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            shipment_id: shipmentIdForAwb,
+            awb,
+          }),
+        },
+      );
+
+      const scheduleText = await scheduleResponse.text();
+      let scheduleJson = null;
+      try {
+        scheduleJson = scheduleText ? JSON.parse(scheduleText) : null;
+      } catch (err) {
+        scheduleJson = null;
+      }
+      const scheduleStatusValue =
+        typeof scheduleJson?.status === "string"
+          ? scheduleJson.status.toUpperCase()
+          : scheduleJson?.status;
+      const scheduleRemark = scheduleJson?.remark || scheduleJson?.remarks || "";
+      const scheduleFailedPayload =
+        scheduleStatusValue === false ||
+        scheduleStatusValue === "FAILED" ||
+        (typeof scheduleRemark === "string" &&
+          scheduleRemark.toLowerCase().includes("special destination")) ||
+        (typeof scheduleRemark === "string" &&
+          scheduleRemark.toLowerCase().includes("error"));
+
+      if (!scheduleResponse.ok || scheduleFailedPayload) {
+        return res.status(400).json({
+          status: false,
+          message:
+            scheduleRemark ||
+            scheduleText ||
+            "Failed to schedule pickup",
+          data: scheduleJson || scheduleText || null,
+        });
+      }
+
+      // Try to get label directly from RapidShyp generate_label
+      let labelUrl = null;
+      try {
+        const labelResp = await generateLabel(rapidShipmentId, awb);
+        labelUrl = labelResp.labelUrl || null;
+      } catch (err) {
+        labelUrl = null;
+      }
+
+      // Fallback: check order-info
+      if (!labelUrl) {
+        const { infoData: postInfoData } = await fetchOrderInfo(
+          rapidShipmentId,
+          rapidShipmentId,
+        );
+        const postShipmentLines = Array.isArray(postInfoData?.shipment_lines)
+          ? postInfoData.shipment_lines
+          : [];
+        const postPrimaryShipment = postShipmentLines[0] || postInfoData || {};
+        labelUrl = extractLabelUrl(postPrimaryShipment);
+      }
+
+      const labelPending = !labelUrl;
+
+      await order.update({
+        selectShippingCharges: Number(selectShippingCharges || 0),
+        selectedCourierName,
+        selectedFreightMode,
+        paymentMethod: paymentMethod || order.paymentMethod,
+        awb_number: awb || order.awb_number,
+        label_url: labelUrl || order.label_url,
+        label_pending: labelPending,
+        rapid_shipment_id: rapidShipmentId || order.rapid_shipment_id,
+      });
+
+      if (String(paymentMethod).toUpperCase() === "PREPAID" && !labelPending) {
+        const authHeader = req.headers.authorization || "";
+        const token = authHeader.startsWith("Bearer ")
+          ? authHeader.split(" ")[1]
+          : req.cookies?.sb_access_token;
+        if (!token) {
+          return res.status(401).json({ status: false, message: "No auth token" });
+        }
+
+        const amount = Number(selectShippingCharges || 0);
+        if (amount > 0) {
+          const walletRes = await fetch(
+            `${process.env.APP_BASE_URL}/wallet/spend`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`,
+              },
+              body: JSON.stringify({
+                amount,
+                description: `Order scheduling for orderId ${order.orderId}`,
+              }),
+            },
+          );
+          const walletData = await walletRes.json();
+          if (!walletRes.ok) {
+            return res.status(400).json({
+              status: false,
+              message: walletData?.message || "Wallet debit failed",
+              data: walletData,
+            });
+          }
+        }
+      }
+
+      return res.status(200).json({
+        status: true,
+        message: labelPending
+          ? "Order scheduled; label pending from courier"
+          : "Order scheduled successfully",
+        data: order.toJSON(),
+        awb,
+        labelUrl,
+        labelPending,
+      });
+    } catch (error) {
+      console.error("Error scheduling order:", error);
+      return res.status(500).json({
+        status: false,
+        message: "Failed to schedule order",
+        error: error.message,
       });
     }
   },
@@ -702,6 +1270,118 @@ router.get("/fetchAllPickupAddress", authMiddleware, async (req, res) => {
 router.get("/count-order", async (req, res) => {
   const count = await order_table.count();
   res.json({ status: true, data: count });
+});
+
+// Return stored label URL for an order
+router.get("/orders/:orderId/label", authMiddleware, async (req, res) => {
+  await ensureOrderTableColumns();
+  try {
+      const { orderId } = req.params;
+      const order = await order_table.findOne({ where: { orderId } });
+    if (!order) {
+      return res.status(404).json({ status: false, message: "Order not found" });
+    }
+    if (order.label_url) {
+      return res.status(200).json({
+        status: true,
+        labelUrl: order.label_url,
+        labelPending: !!order.label_pending,
+      });
+    }
+    return res.status(404).json({
+      status: false,
+      message: "Label not available",
+      labelPending: !!order.label_pending,
+    });
+  } catch (err) {
+    console.error("Error fetching label:", err);
+    return res.status(500).json({ status: false, message: "Failed to fetch label" });
+  }
+});
+
+// Try to refresh label from RapidShyp and store it
+router.post("/orders/:orderId/refresh-label", authMiddleware, async (req, res) => {
+  await ensureOrderTableColumns();
+  try {
+    const { orderId } = req.params;
+    let order = await order_table.findOne({ where: { orderId } });
+    if (!order) {
+      return res.status(404).json({ status: false, message: "Order not found" });
+    }
+
+    // Backfill rapid_shipment_id and awb if missing
+    if (!order.rapid_shipment_id || !order.awb_number) {
+      const { infoData } = await fetchOrderInfo(orderId, orderId);
+      const shipmentLines = Array.isArray(infoData?.shipment_lines)
+        ? infoData.shipment_lines
+        : [];
+      const primary = shipmentLines[0] || infoData || {};
+      const rapidId =
+        primary?.shipment_id ||
+        primary?.Shipment_id ||
+        primary?.order_id ||
+        infoData?.order_id ||
+        order.rapid_shipment_id ||
+        orderId;
+      const awbFromInfo = extractAwbNumber(primary);
+      await order.update(
+        {
+          rapid_shipment_id: rapidId,
+          awb_number: awbFromInfo || order.awb_number,
+        },
+        { returning: false },
+      );
+      order = await order.reload();
+    }
+
+    let labelUrl = null;
+    let awb = order.awb_number || null;
+
+    // First try RapidShyp generate_label
+    const rapidId = order.rapid_shipment_id || orderId;
+    try {
+      const labelResp = await generateLabel(rapidId, order.awb_number);
+      labelUrl = labelResp.labelUrl || null;
+      if (!order.awb_number && labelResp.awb) awb = labelResp.awb;
+    } catch (err) {
+      labelUrl = null;
+    }
+
+    // Fallback to order info
+    if (!labelUrl) {
+      const { infoData } = await fetchOrderInfo(rapidId, rapidId);
+      const shipmentLines = Array.isArray(infoData?.shipment_lines)
+        ? infoData.shipment_lines
+        : [];
+      const primary = shipmentLines[0] || infoData || {};
+      labelUrl = extractLabelUrl(primary);
+      awb = awb || extractAwbNumber(primary);
+    }
+
+    const labelPending = !labelUrl;
+
+    if (labelUrl || awb) {
+      await order.update(
+        {
+          label_url: labelUrl || order.label_url,
+          awb_number: awb || order.awb_number,
+          label_pending: labelPending,
+        },
+        { returning: false },
+      );
+    }
+
+    return res.status(labelUrl ? 200 : 404).json({
+      status: !!labelUrl,
+      message: labelUrl ? "Label refreshed" : "Label still not available",
+      labelUrl: labelUrl || null,
+      awb: awb || null,
+      labelPending,
+    });
+  } catch (err) {
+    console.error("refresh-label error:", err);
+    return res.status(500).json({ status: false, message: "Failed to refresh label" });
+  }
 });
 
 router.post("/schedule-order", authMiddleware, async (req, res) => {
