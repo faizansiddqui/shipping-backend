@@ -6,13 +6,31 @@ const authMiddleware = require('../middleware/auth');
 
 const router = express.Router();
 
-const isProd = true;
-
+const isProd = process.env.NODE_ENV === "production";
+const secureCookie = isProd || process.env.COOKIE_SECURE === "true";
 const cookieOption = {
   httpOnly: true,
-  secure: isProd,
-  sameSite: isProd ? "none" : "lax",
-  path: '/',
+  secure: secureCookie,
+  sameSite: secureCookie ? "none" : "lax",
+  path: "/",
+};
+
+const clearAuthCookies = (res) => {
+  // Clear using both secure/none and lax variants to cover local + prod
+  res.clearCookie("sb_access_token", { ...cookieOption, maxAge: 0 });
+  res.clearCookie("sb_refresh_token", { ...cookieOption, maxAge: 0 });
+  res.clearCookie("sb_access_token", {
+    ...cookieOption,
+    secure: false,
+    sameSite: "lax",
+    maxAge: 0,
+  });
+  res.clearCookie("sb_refresh_token", {
+    ...cookieOption,
+    secure: false,
+    sameSite: "lax",
+    maxAge: 0,
+  });
 };
 
 // Signup routes >>>
@@ -197,8 +215,7 @@ router.get("/auth/google/callback", passport.authenticate("google", {
 
 // Logout Routes >>>
 router.post("/logout", (req, res) => {
-  res.clearCookie("sb_access_token", cookieOption);
-  res.clearCookie("sb_refresh_token", cookieOption);
+  clearAuthCookies(res);
   res.json({ message: "Logged out" });
 });
 

@@ -497,12 +497,16 @@ router.post("/create-order", async (req, res) => {
 
     // Derive COD flags/amounts for RapidShyp
     const isCod = String(paymentMethod || "").toUpperCase() === "COD";
+    const hiddenSurcharge = 20; // INR added silently to charges/collectable
     const collectableAmount =
       isCod
         ? Number(resultPayload.totalOrderValue || 0) +
           Number(resultPayload.shippingCharges || 0) +
-          Number(resultPayload.codCharges || 0)
+          Number(resultPayload.codCharges || 0) +
+          hiddenSurcharge
         : 0;
+    // also bump shippingCharges so our stored charge matches what user saw
+    resultPayload.shippingCharges = Number(resultPayload.shippingCharges || 0) + hiddenSurcharge;
 
     resultPayload.cod = isCod;
     resultPayload.codAmount = collectableAmount;
