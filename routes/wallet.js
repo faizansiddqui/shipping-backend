@@ -14,6 +14,21 @@ function isValidUUID(u) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(u);
 }
 
+async function logFailedTransaction(userId, reason, paymentId = null) {
+  try {
+    await supabase
+      .from("wallet_transactions")
+      .insert({
+        user_id: userId,
+        amount: 0,
+        description: `Recharge failed: ${reason}`,
+        payment_id: paymentId,
+      });
+  } catch (err) {
+    console.error("Log failed tx error:", err);
+  }
+}
+
 // ✅ Create Razorpay Order
 router.post("/create-razor", authMiddleware, async (req, res) => {
   try {
@@ -31,7 +46,14 @@ router.post("/create-razor", authMiddleware, async (req, res) => {
     res.json(order);
   } catch (error) {
     console.error("create-order error:", error);
-    res.status(500).json({ error: "Order creation failed", details: error.message });
+    // Bubble up Razorpay auth problems clearly so UI can show actionable message
+    if (error?.statusCode === 401) {
+      return res.status(401).json({
+        error: "Razorpay authentication failed",
+        details: error?.error || error?.description || "Invalid Razorpay key/secret",
+      });
+    }
+    res.status(500).json({ error: "Order creation failed", details: error?.message || error });
   }
 });
 
@@ -58,23 +80,28 @@ router.post("/verify-payment", authMiddleware, async (req, res) => {
 
     if (expected !== signature) {
       console.warn("Invalid signature", { expected, signature });
+      await logFailedTransaction(userId, "invalid signature", payment_id);
       return res.status(400).json({ success: false, message: "Invalid signature" });
     }
 
     // Fetch payment to double-check
     const payment = await razorpay.payments.fetch(payment_id);
     if (!payment) {
+      await logFailedTransaction(userId, "payment not found", payment_id);
       return res.status(400).json({ success: false, message: "Payment not found on Razorpay" });
     }
     if (payment.order_id !== order_id) {
+      await logFailedTransaction(userId, "order_id mismatch", payment_id);
       return res.status(400).json({ success: false, message: "order_id mismatch" });
     }
     if (payment.status !== "captured") {
+      await logFailedTransaction(userId, `status ${payment.status}`, payment_id);
       return res.status(400).json({ success: false, message: `Payment not captured: ${payment.status}` });
     }
 
     const amountPaise = Math.round(Number(amount) * 100);
     if (Number(payment.amount) !== amountPaise) {
+      await logFailedTransaction(userId, "amount mismatch", payment_id);
       return res.status(400).json({ success: false, message: "Amount mismatch" });
     }
 
@@ -110,6 +137,7 @@ router.post("/verify-payment", authMiddleware, async (req, res) => {
 
     if (error) {
       console.error("Supabase add_to_wallet error:", error);
+      await logFailedTransaction(userId, "wallet update error", payment_id);
       return res.status(500).json({ success: false, message: "Failed to update wallet" });
     }
 
