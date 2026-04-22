@@ -218,7 +218,30 @@ router.post('/create-order', authMiddleware, async (req, res) => {
         if (existingOrder) return res.status(409).json({ status: false, message: `Order ID '${resultPayload.orderId}' already exists. Please use a unique ID.`, existingOrderId: existingOrder.orderId });
 
         try {
-            const created = await order_table.create({ user_id: user._id, status: 'PENDING', orderId: resultPayload.orderId, orderDate: resultPayload.orderDate, pickupAddressName: resultPayload.pickupAddressName || null, storeName: resultPayload.storeName, billingIsShipping: resultPayload.billingIsShipping, shippingAddress: resultPayload.shippingAddress, totalOrderValue: resultPayload.totalOrderValue, shippingCharges: resultPayload.shippingCharges, codCharges: resultPayload.codCharges, prepaidAmount: resultPayload.prepaidAmount, orderItems: resultPayload.orderItems, paymentMethod: resultPayload.paymentMethod, packageDetails: resultPayload.packageDetails, selectShippingCharges: body.selectShippingCharges, selectedCourierName: body.selectedCourierName, selectedFreightMode: body.selectedFreightMode });
+            const created = await order_table.create({
+                user_id: user._id,
+                status: 'PENDING',
+                orderId: resultPayload.orderId,
+                orderDate: resultPayload.orderDate,
+                pickupAddressName: resultPayload.pickupAddressName || null,
+                storeName: resultPayload.storeName,
+                billingIsShipping: resultPayload.billingIsShipping,
+                shippingAddress: resultPayload.shippingAddress,
+                totalOrderValue: resultPayload.totalOrderValue,
+                shippingCharges: resultPayload.shippingCharges,
+                codCharges: resultPayload.codCharges,
+                prepaidAmount: resultPayload.prepaidAmount,
+                orderItems: resultPayload.orderItems,
+                paymentMethod: resultPayload.paymentMethod,
+                packageDetails: resultPayload.packageDetails,
+                selectShippingCharges: body.selectShippingCharges,
+                selectedCourierName: body.selectedCourierName,
+                selectedFreightMode: body.selectedFreightMode,
+                cod: resultPayload.cod,
+                codAmount: resultPayload.codAmount,
+                collectable_amount: resultPayload.collectable_amount,
+                collectableValue: resultPayload.collectableValue,
+            });
         } catch (dbErr) {
             console.error('DB Save Order Error:', dbErr);
             return res.status(500).json({ status: false, message: 'Failed to save order locally', error: dbErr.message });
