@@ -1,7 +1,7 @@
 const dotenv = require('dotenv');
 const cors = require('cors');
 const { app } = require('./app');
-const passportConfig = require('./config/passport'); 
+const passportConfig = require('./config/passport');
 const authRoutes = require('./routes/authRoutes');
 const orderRoutes = require('./routes/orderRoutes');
 const createOrder = require('./routes/createOrder');
@@ -16,7 +16,7 @@ if (!process.env.MONGO_URI || !process.env.JWT_SECRET) {
 }
 
 app.use(cors({
-  origin: [process.env.FRONTEND_URL,"http://localhost:3000"],
+  origin: [process.env.FRONTEND_URL, "http://localhost:3000"],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Cookie'],
@@ -37,6 +37,14 @@ app.use(wallet)  //wallet logics
 // Home Routes >>>
 app.get("/", (req, res) => {
   res.send("Welcome user");
+});
+
+// Centralized error handler: ensures consistent JSON error shape
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err && err.stack ? err.stack : err);
+  const status = err && (err.status || err.statusCode) ? (err.status || err.statusCode) : 500;
+  const message = err && err.message ? err.message : 'Internal Server Error';
+  res.status(status).json({ success: false, message });
 });
 
 // Start server
