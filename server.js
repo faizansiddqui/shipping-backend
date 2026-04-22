@@ -11,9 +11,8 @@ dotenv.config();
 
 const PORT = process.env.PORT || 5000;
 
-if (!process.env.SUPABASE_URL || !process.env.SUPABASE_ANON_KEY) {
-  console.error("Missing SUPABASE_URL or SUPABASE_ANON_KEY in env");
-  process.exit(1);
+if (!process.env.MONGO_URI || !process.env.JWT_SECRET) {
+  console.warn('Warning: MONGO_URI or JWT_SECRET not set. Ensure environment variables are provided for MongoDB and JWT.');
 }
 
 app.use(cors({

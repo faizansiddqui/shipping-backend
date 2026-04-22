@@ -1,117 +1,30 @@
-const { db, DataTypes } = require('../config/db');
+const mongoose = require('../config/mongo');
 
-const OrderTable = db.define('OrderTable', {
-    orderId: {
-        type: DataTypes.STRING,
-        primaryKey: true,
-        unique: true,
-        allowNull: false
-    },
-    status: {
-        type: DataTypes.ENUM('PENDING', 'ACCEPTED', 'REJECTED', 'ON_WAY', 'RTO', 'DELIVERED'),
-        allowNull: false,
-        defaultValue: 'PENDING'
-    },
+const Schema = mongoose.Schema;
 
-    selectShippingCharges: {
-        type: DataTypes.FLOAT,
-        allowNull: true
-    },
-    selectedCourierName: {
-        type: DataTypes.STRING,
-        allowNull: true
-    },
-    selectedFreightMode: {
-        type: DataTypes.STRING,
-        allowNull: true
-    },
-    orderDate: {
-        type: DataTypes.STRING,
-        allowNull: false
-    },
-    // Pickup details
-    pickupAddressName: {
-        type: DataTypes.STRING,
-        allowNull: true  // conditionally mandatory
-    },
-    pickupLocation: {
-        type: DataTypes.JSON, // contactName, pickupName, email, etc.
-        allowNull: true
-    },
-    storeName: {
-        type: DataTypes.STRING,
-        allowNull: false,
-        defaultValue: "DEFAULT"
-    },
+const OrderSchema = new Schema({
+  orderId: { type: String, required: true, unique: true },
+  status: { type: String, enum: ['PENDING', 'ACCEPTED', 'REJECTED', 'ON_WAY', 'RTO', 'DELIVERED'], default: 'PENDING' },
+  selectShippingCharges: { type: Number },
+  selectedCourierName: { type: String },
+  selectedFreightMode: { type: String },
+  orderDate: { type: String },
+  pickupAddressName: { type: String },
+  pickupLocation: { type: Schema.Types.Mixed },
+  storeName: { type: String, default: 'DEFAULT' },
+  billingIsShipping: { type: Boolean },
+  shippingAddress: { type: Schema.Types.Mixed, required: true },
+  orderItems: { type: [Schema.Types.Mixed], required: true },
+  paymentMethod: { type: String, enum: ['COD', 'PREPAID'], required: true },
+  shippingCharges: { type: Number },
+  totalOrderValue: { type: Number, required: true },
+  prepaidAmount: { type: Number },
+  packageDetails: { type: Schema.Types.Mixed, required: true },
+  user_id: { type: String, required: true },
+  awb_number: { type: String },
+  label_url: { type: String },
+  label_pending: { type: Boolean, default: false },
+  rapid_shipment_id: { type: String },
+}, { timestamps: true });
 
-    // Billing/Shipping
-    billingIsShipping: {
-        type: DataTypes.BOOLEAN,
-        allowNull: false
-    },
-    shippingAddress: {
-        type: DataTypes.JSON, // { firstName, addressLine1, pinCode, phone, ... }
-        allowNull: false
-    },
-
-    // Order Items
-    orderItems: {
-        type: DataTypes.JSON, // [{ itemName, sku, units, unitPrice, tax, ... }]
-        allowNull: false
-    },
-
-    // Payment details
-    paymentMethod: {
-        type: DataTypes.ENUM('COD', "PREPAID"),
-        allowNull: false
-    },
-    shippingCharges: {
-        type: DataTypes.FLOAT,
-        allowNull: true
-    },
-
-    totalOrderValue: {
-        type: DataTypes.FLOAT,
-        allowNull: false
-    },
-    prepaidAmount: {
-        type: DataTypes.FLOAT,
-        allowNull: true
-    },
-
-    // Package details
-    packageDetails: {
-        type: DataTypes.JSON, // { packageLength, packageBreadth, packageHeight, packageWeight }
-        allowNull: false
-    },
-
-    user_id: {
-        type: DataTypes.UUID,
-        allowNull: false,
-        field: 'user_id'
-    },
-
-    awb_number: {
-        type: DataTypes.STRING,
-        allowNull: true,
-    },
-    label_url: {
-        type: DataTypes.STRING(2048),
-        allowNull: true,
-    },
-    label_pending: {
-        type: DataTypes.BOOLEAN,
-        allowNull: true,
-        defaultValue: false,
-    },
-    rapid_shipment_id: {
-        type: DataTypes.STRING,
-        allowNull: true,
-    },
-
-}, {
-    timestamps: true, // adds createdAt, updatedAt
-    freezeTableName: true // prevents plural names like "OrderTables"
-});
-
-module.exports = OrderTable;
+module.exports = mongoose.model('OrderTable', OrderSchema);

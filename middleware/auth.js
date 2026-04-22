@@ -1,9 +1,8 @@
-// backend/middleware/auth.js
-const supabaseAdmin = require('../config/supabase');
+// middleware/auth.js -- JWT-based auth
+const { getUserFromToken } = require('../utils/jwt');
 
 const authMiddleware = async (req, res, next) => {
   try {
-    // token can come from cookie or Authorization header
     const authHeader = req.headers.authorization;
     const tokenFromHeader = authHeader && authHeader.startsWith('Bearer ')
       ? authHeader.split(' ')[1]
@@ -14,15 +13,12 @@ const authMiddleware = async (req, res, next) => {
       return res.status(401).json({ status: false, message: 'Unauthorized: no token' });
     }
 
-   const { data, error } = await supabaseAdmin.auth.getUser(accessToken);
-
-    if (error || !data?.user) {
-      console.error('Supabase getUser error:', error);
+    const user = await getUserFromToken(accessToken);
+    if (!user) {
       return res.status(401).json({ status: false, message: 'Invalid or expired token' });
     }
 
-    // attach user to request for downstream handlers
-    req.user = data.user;
+    req.user = user;
     next();
   } catch (err) {
     console.error('Auth middleware error:', err);
