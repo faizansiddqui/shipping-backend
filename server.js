@@ -15,8 +15,16 @@ if (!process.env.MONGO_URI || !process.env.JWT_SECRET) {
   console.warn('Warning: MONGO_URI or JWT_SECRET not set. Ensure environment variables are provided for MongoDB and JWT.');
 }
 
+const allowedOrigins = [process.env.FRONTEND_URL, "http://localhost:3000"].filter(Boolean);
 app.use(cors({
-  origin: [process.env.FRONTEND_URL, "http://localhost:3000"],
+  origin: function (origin, callback) {
+    // allow requests with no origin (curl, server-to-server)
+    if (!origin) return callback(null, true);
+    // if no FRONTEND_URL configured, allow the origin (useful for flexible deploys)
+    if (allowedOrigins.length === 0) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error('CORS not allowed by server'), false);
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Cookie'],

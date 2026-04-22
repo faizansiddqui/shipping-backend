@@ -14,10 +14,19 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
+const isProd = process.env.NODE_ENV === 'production';
+const sessionCookie = {
+  httpOnly: true,
+  secure: isProd || process.env.COOKIE_SECURE === 'true',
+  sameSite: isProd ? 'none' : 'lax',
+  path: '/',
+};
+
 app.use(session({
   secret: process.env.SESSION_SECRET || 'fallback_secret_key',
   resave: false,
-  saveUninitialized: true,
+  saveUninitialized: false, // do not set session cookie for anonymous requests
+  cookie: sessionCookie,
 }));
 
 app.use(passport.initialize());
