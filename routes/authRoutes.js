@@ -4,6 +4,8 @@ const passport = require('../config/passport');
 const { signAccessToken, signRefreshToken, verifyRefreshToken } = require('../utils/jwt');
 const User = require('../models/User');
 const authMiddleware = require('../middleware/auth');
+const { v4: uuidv4 } = require('uuid');
+const { sendMail } = require('../utils/brevoMailer');
 
 const router = express.Router();
 
@@ -69,6 +71,76 @@ router.post('/login', async (req, res) => {
   } catch (err) {
     console.error('Login error:', err);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Forgot password: generate token and (optionally) return reset link in non-prod
+router.post('/forgot-password', async (req, res) => {
+  const { email } = req.body || {};
+  if (!email) return res.status(400).json({ success: false, status: 'error', message: 'Email required' });
+
+  try {
+    const user = await User.findOne({ email });
+    if (!user) {
+      // For privacy, do not reveal whether the account exists
+      return res.json({ success: true, status: 'notified', message: 'If an account exists, a reset link will be sent.' });
+    }
+
+    const token = uuidv4();
+    user.passwordResetToken = token;
+    user.passwordResetExpires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+    await user.save();
+
+    const resetLink = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reset-password?token=${token}`;
+
+    // If Brevo is configured, attempt to send email and report send status
+    if (process.env.BREVO_API_KEY) {
+      try {
+        const subject = 'Reset your password';
+        const html = `<p>Hi ${user.name || ''},</p><p>We received a request to reset your password. Click the link below to set a new password (valid for 1 hour):</p><p><a href="${resetLink}">${resetLink}</a></p><p>If you did not request this, you can safely ignore this email.</p>`;
+        const text = `Reset your password: ${resetLink}`;
+        await sendMail({ to: user.email, subject, html, text });
+        return res.json({ success: true, status: 'sent', message: 'Reset link sent to the provided email address.' });
+      } catch (emailErr) {
+        console.error('Error sending reset email:', emailErr);
+        return res.status(500).json({ success: false, status: 'failed', message: 'Failed to send reset link. Please try again later.' });
+      }
+    }
+
+    // If no email provider is configured, return the generated link only in non-prod/debug for developer convenience
+    if (process.env.NODE_ENV !== 'production' || process.env.DEBUG_SEND_RESET_LINK === 'true') {
+      return res.json({ success: true, status: 'generated', message: 'Reset link generated', resetLink });
+    }
+
+    return res.json({ success: true, status: 'not_configured', message: 'Email service not configured. If an account exists, a reset link will be sent once configured.' });
+  } catch (err) {
+    console.error('Forgot password error:', err);
+    res.status(500).json({ success: false, status: 'error', message: 'Server error' });
+  }
+});
+
+// Reset password using token
+router.post('/reset-password', async (req, res) => {
+  const { token, password } = req.body || {};
+  if (!token || !password) return res.status(400).json({ error: 'Token and password required' });
+  if (String(password).length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+
+  try {
+    const user = await User.findOne({ passwordResetToken: token, passwordResetExpires: { $gt: new Date() } });
+    if (!user) return res.status(400).json({ error: 'Invalid or expired token' });
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    user.passwordHash = passwordHash;
+    user.passwordResetToken = undefined;
+    user.passwordResetExpires = undefined;
+    // also clear refresh token to force re-login
+    user.refreshToken = null;
+    await user.save();
+
+    return res.json({ message: 'Password reset successful' });
+  } catch (err) {
+    console.error('Reset password error:', err);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 

@@ -11,6 +11,9 @@ const UserSchema = new Schema({
     name: { type: String },
     pincode: { type: String },
     refreshToken: { type: String },
+    // Password reset token and expiry for "forgot password" flow
+    passwordResetToken: { type: String },
+    passwordResetExpires: { type: Date },
 }, { timestamps: true });
 
 UserSchema.methods.verifyPassword = function (password) {
