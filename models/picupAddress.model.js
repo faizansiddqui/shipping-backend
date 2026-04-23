@@ -11,6 +11,7 @@ const PickupSchema = new Schema({
   email: { type: String },
   address_line: { type: String, required: true },
   address_line2: { type: String },
+  city: { type: String, required: true },
   pincode: { type: String, required: true },
   gstin: { type: String },
   dropship_location: { type: Boolean, default: false },

@@ -512,6 +512,80 @@ router.get('/fetchAllPickupAddress', authMiddleware, async (req, res) => {
     }
 });
 
+// Get full pickup location details by name (for edit/preview)
+router.get('/get/pickup_location', authMiddleware, async (req, res) => {
+    try {
+        const user = req.user;
+        const { addressName, address_name } = req.query;
+        const rawName = (addressName || address_name || '').toString();
+        if (!rawName || rawName.trim().length === 0) return res.status(400).json({ status: false, message: 'addressName query parameter is required' });
+        const trimmed = rawName.trim();
+        const pickup = await pickup_table.findOne({ user_id: user._id, address_name: trimmed }).lean();
+        if (!pickup) return res.status(404).json({ status: false, message: `Pickup location not found for address name: ${trimmed}` });
+        return res.status(200).json({ status: true, data: pickup });
+    } catch (error) {
+        console.error('Error in /get/pickup_location:', error);
+        return res.status(500).json({ status: false, message: 'Internal server error while fetching pickup details' });
+    }
+});
+
+// Update existing pickup location
+router.post('/update/pickup_location', authMiddleware, async (req, res) => {
+    try {
+        const user = req.user;
+        const {
+            original_address_name,
+            address_name,
+            contact_name,
+            contact_number,
+            email,
+            address_line,
+            address_line2,
+            city,
+            pincode,
+            dropship_location,
+            gstin,
+            use_alt_rto_address,
+            create_rto_address = {},
+        } = req.body || {};
+
+        const targetName = (original_address_name || address_name || '').toString().trim();
+        if (!targetName) return res.status(400).json({ success: false, message: 'original_address_name or address_name is required to locate the record to update' });
+
+        const existing = await pickup_table.findOne({ user_id: user._id, address_name: targetName });
+        if (!existing) return res.status(404).json({ success: false, message: 'Pickup address not found for update' });
+
+        const newName = (address_name || existing.address_name).toString().trim();
+        if (newName !== existing.address_name) {
+            const dup = await pickup_table.findOne({ user_id: user._id, address_name: newName });
+            if (dup) return res.status(400).json({ success: false, message: 'Another address with this name already exists' });
+        }
+
+        // Minimal validation (keep consistent with create)
+        if (contact_number && !/^\d{10}$/.test(String(contact_number))) return res.status(400).json({ success: false, message: 'contact_number must be 10 digits' });
+        if (pincode && !/^\d{6}$/.test(String(pincode))) return res.status(400).json({ success: false, message: 'pincode must be 6 digits' });
+
+        existing.address_name = newName;
+        existing.contact_name = contact_name || existing.contact_name;
+        existing.contact_number = contact_number || existing.contact_number;
+        existing.email = email || existing.email;
+        existing.address_line = address_line || existing.address_line;
+        existing.address_line2 = address_line2 || existing.address_line2;
+        existing.city = city || existing.city;
+        existing.pincode = pincode || existing.pincode;
+        existing.gstin = gstin || existing.gstin;
+        existing.dropship_location = typeof dropship_location === 'boolean' ? dropship_location : existing.dropship_location;
+        existing.use_alt_rto_address = typeof use_alt_rto_address === 'boolean' ? use_alt_rto_address : existing.use_alt_rto_address;
+        existing.create_rto_address = existing.use_alt_rto_address ? (create_rto_address || existing.create_rto_address) : {};
+
+        await existing.save();
+        return res.json({ success: true, message: 'Pickup address updated', data: existing });
+    } catch (error) {
+        console.error('Error updating pickup location:', error);
+        return res.status(500).json({ success: false, message: 'Internal server error while updating pickup location' });
+    }
+});
+
 router.get('/count-order', async (req, res) => {
     const count = await order_table.countDocuments();
     res.json({ status: true, data: count });
